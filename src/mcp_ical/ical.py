@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from threading import Semaphore
 from typing import Any
 
@@ -206,11 +206,18 @@ class CalendarManager:
             logger.error(f"Failed to update event: {e}")
             raise
 
-    def delete_event(self, event_id: str) -> bool:
-        """Delete an event by its identifier
+    def delete_event(
+        self, event_id: str, delete_entire_series: bool = False, occurrence_date: datetime | None = None
+    ) -> bool:
+        """Delete an event by its identifier, optionally targeting a specific occurrence or future events
 
         Args:
             event_id: The unique identifier of the event to delete
+            delete_entire_series: When True with occurrence_date, deletes the occurrence and all future ones.
+                                 When True without occurrence_date, deletes all occurrences.
+                                 When False (default), deletes only the specific occurrence.
+            occurrence_date: Datetime of specific occurrence to target.
+                             Required when deleting a specific occurrence of a recurring event.
 
         Returns:
             bool: True if deletion was successful, False otherwise
@@ -218,23 +225,47 @@ class CalendarManager:
         Raises:
             NoSuchEventException: If the event with the given ID doesn't exist
             Exception: If there was an error deleting the event
+
+        Behavior:
+            - Non-recurring event: Just use event_id (delete_entire_series is ignored)
+            - Delete one occurrence: provide occurrence_date, delete_entire_series=False (default)
+            - Delete from occurrence forward: provide occurrence_date, delete_entire_series=True
+            - Delete all occurrences: event_id only, delete_entire_series=True
         """
-        existing_event = self.find_event_by_id(event_id)
-        if not existing_event:
-            raise NoSuchEventException(event_id)
+        # If occurrence_date is provided, find the specific occurrence
+        if occurrence_date:
+            existing_event = self.find_event_occurrence(event_id, occurrence_date)
+            if not existing_event:
+                raise NoSuchEventException(f"{event_id} at {occurrence_date.isoformat()}")
+        else:
+            existing_event = self.find_event_by_id(event_id)
+            if not existing_event:
+                raise NoSuchEventException(event_id)
 
         existing_ek_event = existing_event._raw_event
         if not existing_ek_event:
             raise NoSuchEventException(event_id)
 
         try:
-            success, error = self.event_store.removeEvent_span_error_(existing_ek_event, EKSpanFutureEvents, None)
+            # Use EKSpanFutureEvents to delete all future occurrences, or EKSpanThisEvent for just this one
+            span = EKSpanFutureEvents if delete_entire_series else EKSpanThisEvent
+            success, error = self.event_store.removeEvent_span_error_(existing_ek_event, span, None)
 
             if not success:
                 logger.error(f"Failed to delete event: {error}")
                 raise Exception(error)
 
-            logger.info(f"Successfully deleted event: {existing_event.title}")
+            # Build log message based on what was deleted
+            if occurrence_date and delete_entire_series:
+                scope = f"occurrence at {occurrence_date.isoformat()} and all future occurrences"
+            elif occurrence_date:
+                scope = f"occurrence at {occurrence_date.isoformat()}"
+            elif delete_entire_series:
+                scope = "all occurrences"
+            else:
+                scope = "event"
+
+            logger.info(f"Successfully deleted: {existing_event.title} {scope}")
             return True
 
         except Exception as e:
@@ -256,6 +287,56 @@ class CalendarManager:
             return None
 
         return Event.from_ekevent(ekevent)
+
+    def find_event_occurrence(self, event_id: str, occurrence_date: datetime) -> Event | None:
+        """Find a specific occurrence of a recurring event.
+
+        Searches for events near the occurrence_date and matches by comparing datetimes.
+        If the datetime has no timezone, tries both as-provided and UTC interpretations.
+
+        Args:
+            event_id: The event identifier
+            occurrence_date: Start time of the occurrence
+
+        Returns:
+            The matching occurrence, or None if not found
+        """
+        result = self._search_occurrence_by_datetime(event_id, occurrence_date)
+        if result:
+            return result
+
+        # If naive datetime, try UTC interpretation (common when Claude constructs local times)
+        if occurrence_date.tzinfo is None:
+            logger.info(f"No match for {event_id}, trying UTC interpretation of {occurrence_date}")
+            utc_datetime = occurrence_date.replace(tzinfo=timezone.utc)
+            result = self._search_occurrence_by_datetime(event_id, utc_datetime)
+            if result:
+                logger.info(f"Found match using UTC interpretation")
+                return result
+
+        logger.info(f"No occurrence found for {event_id} at {occurrence_date}")
+        return None
+
+    def _search_occurrence_by_datetime(self, event_id: str, target_datetime: datetime) -> Event | None:
+        """Search for occurrence by datetime.
+
+        Uses a minimal ±1 minute search window (required by EventKit's predicate API),
+        then does exact datetime matching with ==.
+        """
+        search_start = target_datetime - timedelta(minutes=1)
+        search_end = target_datetime + timedelta(minutes=1)
+
+        predicate = self.event_store.predicateForEventsWithStartDate_endDate_calendars_(
+            search_start, search_end, None
+        )
+        events = self.event_store.eventsMatchingPredicate_(predicate)
+
+        for ekevent in events:
+            if ekevent.eventIdentifier() == event_id and ekevent.startDate() == target_datetime:
+                logger.debug(f"Found occurrence for {event_id} at {target_datetime}")
+                return Event.from_ekevent(ekevent)
+
+        return None
 
     def list_calendar_names(self) -> list[str]:
         """List all available calendar names

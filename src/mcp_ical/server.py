@@ -197,6 +197,70 @@ async def update_event(event_id: str, update_event_request: UpdateEventRequest) 
         return f"Error updating event: {str(e)}"
 
 
+@mcp.tool()
+async def delete_event(
+    event_id: str, delete_entire_series: bool = False, occurrence_date: datetime | None = None
+) -> str:
+    """Delete a calendar event or specific occurrence(s) of a recurring event.
+
+    CRITICAL: When deleting specific occurrences, you MUST use the EXACT datetime from list_events
+    including timezone information. Do NOT construct dates manually - always copy the exact datetime
+    from list_events output to ensure correct matching.
+
+    Before using this tool, make sure to:
+    1. Confirm with the user that they want to delete this event
+    2. For recurring events:
+        Consider if they want to:
+            - Delete just one occurrence: provide occurrence_date (default behavior)
+            - Delete from an occurrence forward: provide occurrence_date + delete_entire_series=True
+            - Delete the entire series: set delete_entire_series=True (no occurrence_date)
+        - Ask which occurrence(s) they want to delete if that isn't very clear
+        - Use list_events first to get exact datetimes if you don't have them
+        - Use the EXACT datetime from list_events (including timezone)
+
+    Args:
+        event_id: Unique identifier of the event (master event ID for recurring events)
+        delete_entire_series: When True with occurrence_date, deletes that occurrence and all future ones.
+                             When True without occurrence_date, deletes all occurrences.
+                             When False (default), deletes only the specific occurrence.
+        occurrence_date: The EXACT start time with timezone from list_events output.
+                        REQUIRED when deleting a specific occurrence.
+                        MUST include timezone information (e.g., "2025-11-23T14:00:00+00:00")
+                        DO NOT construct this manually - copy from list_events output.
+
+    Usage Examples:
+        - Delete non-recurring event: delete_event("event-id-123")
+        - Delete one occurrence:
+          1. First: list_events to get exact datetime
+          2. Then: delete_event("event-id-456", occurrence_date="2025-11-23T14:00:00+00:00")
+        - Delete from occurrence forward: delete_event("event-id-456", occurrence_date="2025-11-23T14:00:00+00:00", delete_entire_series=True)
+        - Delete all occurrences: delete_event("event-id-456", delete_entire_series=True)
+
+    Note:
+        Timezone information is CRITICAL. If you construct datetimes without timezone info,
+        the deletion may target the wrong occurrence or fail completely. Always use list_events
+        first and copy the exact datetime including timezone offset.
+    """
+    logger.info(
+        f"Attempting to delete event with ID: {event_id}, "
+        f"delete_entire_series={delete_entire_series}, "
+        f"occurrence_date={occurrence_date}"
+    )
+    try:
+        manager = get_calendar_manager()
+
+        # Delete the event - this handles all the logic and error checking
+        success = manager.delete_event(event_id, delete_entire_series, occurrence_date)
+
+        if success:
+            return "Event deleted successfully"
+        else:
+            return f"Failed to delete event with ID {event_id}"
+
+    except Exception as e:
+        return f"Error deleting event: {str(e)}"
+
+
 def main():
     logger.info("Running mcp-ical server...")
     mcp.run(transport="stdio")

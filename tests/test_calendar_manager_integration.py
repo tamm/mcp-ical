@@ -182,26 +182,139 @@ def test_update_event(calendar_manager, test_event_base, test_calendar, cleanup_
     assert retrieved_event.location == new_location
 
 
-def test_delete_event(calendar_manager, test_event_base, test_calendar):
-    """Test deleting an event"""
-    # Create event
+def test_delete_non_recurring_event(calendar_manager, test_event_base, test_calendar):
+    """Test deleting a non-recurring event (simplest case)"""
+    # Create non-recurring event
     event = calendar_manager.create_event(
         CreateEventRequest(
-            title=test_event_base["title"],
+            title="Non-Recurring Event",
             start_time=test_event_base["start_time"],
             end_time=test_event_base["end_time"],
-            notes=test_event_base["notes"],
-            location=test_event_base["location"],
             calendar_name=test_calendar["name"],
         )
     )
 
-    # Delete event
-    calendar_manager.delete_event(event.identifier)
+    # Delete event (delete_entire_series parameter doesn't matter for non-recurring)
+    success = calendar_manager.delete_event(event.identifier)
+    assert success is True
 
     # Verify event was deleted
     retrieved_event = calendar_manager.find_event_by_id(event.identifier)
     assert retrieved_event is None
+
+
+def test_delete_recurring_event_entire_series(calendar_manager, test_event_base, test_calendar):
+    """Test deleting an entire recurring event series"""
+    # Create recurring event (3 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=3)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event to Delete",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    event_id = event.identifier
+
+    # Verify the recurring event was created
+    retrieved_event = calendar_manager.find_event_by_id(event_id)
+    assert retrieved_event is not None
+
+    # List events to verify all occurrences exist
+    events_before = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=5),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events_before) == 3
+
+    # Delete entire series (default behavior)
+    success = calendar_manager.delete_event(event_id, delete_entire_series=True)
+    assert success is True
+
+    # Verify all occurrences were deleted
+    events_after = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=5),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events_after) == 0
+
+    # Verify the event itself is gone
+    retrieved_event = calendar_manager.find_event_by_id(event_id)
+    assert retrieved_event is None
+
+
+def test_delete_recurring_event_single_occurrence(calendar_manager, test_event_base, test_calendar):
+    """Test deleting just one occurrence from a recurring event (with occurrence_date, default delete_entire_series=False)"""
+    # Create recurring event (5 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=5)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event - Delete One",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    # Delete the 3rd occurrence (relies on default delete_entire_series=False)
+    third_occurrence_date = test_event_base["start_time"] + timedelta(days=2)
+    success = calendar_manager.delete_event(event.identifier, occurrence_date=third_occurrence_date)
+    assert success is True
+
+    # Verify only one occurrence was deleted (should have 4 remaining: 1st, 2nd, 4th, 5th)
+    events_after = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=7),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events_after) == 4
+
+    # Clean up
+    calendar_manager.delete_event(event.identifier, delete_entire_series=True)
+
+
+def test_delete_recurring_event_from_occurrence_forward(calendar_manager, test_event_base, test_calendar):
+    """Test deleting from a specific occurrence forward (occurrence_date + delete_entire_series=True)"""
+    # Create recurring event (5 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=5)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event - Delete Forward",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    # Delete from 3rd occurrence forward (should delete 3rd, 4th, 5th; keep 1st, 2nd)
+    third_occurrence_date = test_event_base["start_time"] + timedelta(days=2)
+    success = calendar_manager.delete_event(
+        event.identifier,
+        delete_entire_series=True,
+        occurrence_date=third_occurrence_date
+    )
+    assert success is True
+
+    # Verify 3rd, 4th, 5th deleted; 1st, 2nd remain
+    events_after = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=7),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events_after) == 2
+
+    # Clean up remaining
+    calendar_manager.delete_event(event.identifier, delete_entire_series=True)
 
 
 def test_recurring_event(calendar_manager, test_event_base, test_calendar, cleanup_events):
