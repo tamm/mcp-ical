@@ -205,6 +205,7 @@ class CreateEventRequest(BaseModel):
     start_time: datetime
     end_time: datetime
     calendar_name: str | None = None
+    calendar_id: str | None = None
     location: str | None = None
     notes: str | None = None
     alarms_minutes_offsets: list[int] | None = None
@@ -218,6 +219,7 @@ class UpdateEventRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     calendar_name: str | None = None
+    calendar_id: str | None = None
     location: str | None = None
     notes: str | None = None
     alarms_minutes_offsets: list[int] | None = None

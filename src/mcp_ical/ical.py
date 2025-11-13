@@ -49,27 +49,34 @@ class CalendarManager:
         start_time: datetime,
         end_time: datetime,
         calendar_name: str | None = None,
+        calendar_id: str | None = None,
     ) -> list[Event]:
         """List all events within a given date range
 
         Args:
             start_time: The start time of the date range
             end_time: The end time of the date range
-            calendar_name: The name of the calendar to filter by
+            calendar_name: The name of the calendar to filter by (for backward compatibility)
+            calendar_id: The ID of the calendar to filter by (preferred)
 
         Returns:
             list[Event]: A list of events within the date range
+
+        Raises:
+            MultipleCalendarsException: If calendar_name matches multiple calendars
         """
         # only list events in a particular calendar if specified, otherwise search across all calendars
-        calendar = self._find_calendar_by_name(calendar_name) if calendar_name else None
-        if calendar_name and not calendar:
-            raise NoSuchCalendarException(calendar_name)
+        calendar = None
+        if calendar_id or calendar_name:
+            calendar = self._find_calendar(calendar_id=calendar_id, calendar_name=calendar_name)
+            if not calendar:
+                id_or_name = calendar_id or calendar_name
+                raise NoSuchCalendarException(id_or_name)
 
         calendars = [calendar] if calendar else None
 
-        logger.info(
-            f"Listing events between {start_time} - {end_time}, searching in: {calendar_name if calendar_name else 'all calendars'}"
-        )
+        cal_desc = calendar_id or calendar_name or "all calendars"
+        logger.info(f"Listing events between {start_time} - {end_time}, searching in: {cal_desc}")
 
         predicate = self.event_store.predicateForEventsWithStartDate_endDate_calendars_(start_time, end_time, calendars)
 
@@ -109,13 +116,15 @@ class CalendarManager:
         if new_event.recurrence_rule:
             ekevent.setRecurrenceRule_(new_event.recurrence_rule.to_ek_recurrence())
 
-        if new_event.calendar_name:
-            calendar = self._find_calendar_by_name(new_event.calendar_name)
+        # Find calendar using ID or name (ID preferred)
+        if new_event.calendar_id or new_event.calendar_name:
+            calendar = self._find_calendar(
+                calendar_id=new_event.calendar_id, calendar_name=new_event.calendar_name
+            )
             if not calendar:
-                logger.error(
-                    f"Failed to create event: The specified calendar '{new_event.calendar_name}' does not exist."
-                )
-                raise NoSuchCalendarException(new_event.calendar_name)
+                id_or_name = new_event.calendar_id or new_event.calendar_name
+                logger.error(f"Failed to create event: The specified calendar '{id_or_name}' does not exist.")
+                raise NoSuchCalendarException(id_or_name)
         else:
             calendar = self.event_store.defaultCalendarForNewEvents()
             logger.debug(f"Using default calendar, {calendar}, for new event")
@@ -169,13 +178,16 @@ class CalendarManager:
         if request.all_day is not None:
             existing_ek_event.setAllDay_(request.all_day)
 
-        # Update calendar if specified
-        if request.calendar_name:
-            calendar = self._find_calendar_by_name(request.calendar_name)
+        # Update calendar if specified (ID or name)
+        if request.calendar_id or request.calendar_name:
+            calendar = self._find_calendar(
+                calendar_id=request.calendar_id, calendar_name=request.calendar_name
+            )
             if calendar:
                 existing_ek_event.setCalendar_(calendar)
             else:
-                raise NoSuchCalendarException(request.calendar_name)
+                id_or_name = request.calendar_id or request.calendar_name
+                raise NoSuchCalendarException(id_or_name)
 
         # Update recurrence rule
         if request.recurrence_rule is not None:
@@ -373,7 +385,7 @@ class CalendarManager:
 
             calendar_info_list.append(
                 CalendarInfo(
-                    calendar_id=calendar.calendarIdentifier(),
+                    calendar_id=calendar.uniqueIdentifier(),
                     calendar_name=calendar.title(),
                     source_name=source.title(),
                     source_type=source_type,
@@ -433,22 +445,66 @@ class CalendarManager:
         logger.info(f"Calendar '{calendar_id}' not found")
         return None
 
-    def _find_calendar_by_name(self, calendar_name: str) -> Any | None:
+    def _find_calendar_by_name(self, calendar_name: str, raise_on_duplicate: bool = False) -> Any | None:
         """Find a calendar by name. Returns None if not found.
 
         Args:
             calendar_name: The name of the calendar to find
+            raise_on_duplicate: If True, raise exception when multiple calendars have the same name
 
         Returns:
             Any | None: The calendar if found, None otherwise
-        """
 
+        Raises:
+            MultipleCalendarsException: If raise_on_duplicate=True and multiple calendars found
+        """
+        matches = []
         for calendar in self.event_store.calendars():
             if calendar.title() == calendar_name:
-                return calendar
+                matches.append(calendar)
 
-        logger.info(f"Calendar '{calendar_name}' not found")
-        return None
+        if len(matches) == 0:
+            logger.info(f"Calendar '{calendar_name}' not found")
+            return None
+
+        if len(matches) > 1:
+            if raise_on_duplicate:
+                calendar_info = [
+                    (cal.uniqueIdentifier(), cal.source().title()) for cal in matches
+                ]
+                raise MultipleCalendarsException(calendar_name, calendar_info)
+            else:
+                logger.warning(
+                    f"Multiple calendars named '{calendar_name}' found, using first match"
+                )
+
+        return matches[0]
+
+    def _find_calendar(
+        self, calendar_id: str | None = None, calendar_name: str | None = None
+    ) -> Any | None:
+        """Find a calendar by ID or name. Prefers ID if both provided.
+
+        Args:
+            calendar_id: Unique calendar identifier (preferred)
+            calendar_name: Calendar name (falls back to this if no ID)
+
+        Returns:
+            Any | None: The calendar if found, None otherwise
+
+        Raises:
+            ValueError: If neither calendar_id nor calendar_name provided
+            MultipleCalendarsException: If calendar_name matches multiple calendars
+        """
+        if not calendar_id and not calendar_name:
+            raise ValueError("Either calendar_id or calendar_name must be provided")
+
+        # Prefer ID lookup if provided
+        if calendar_id:
+            return self._find_calendar_by_id(calendar_id)
+
+        # Fall back to name lookup, but raise error if duplicates found
+        return self._find_calendar_by_name(calendar_name, raise_on_duplicate=True)
 
     def _create_calendar(self, calendar_name: str, source_name: str = "iCloud") -> Any | None:
         """Create a new calendar with the specified name.
@@ -535,6 +591,26 @@ class CalendarManager:
 class NoSuchCalendarException(Exception):
     def __init__(self, calendar_name: str):
         super().__init__(f"Calendar: {calendar_name} does not exist")
+
+
+class MultipleCalendarsException(Exception):
+    """Raised when multiple calendars with the same name are found and disambiguation is required"""
+
+    def __init__(self, calendar_name: str, calendar_info: list[tuple[str, str]]):
+        """
+        Args:
+            calendar_name: The ambiguous calendar name
+            calendar_info: List of (calendar_id, source_name) tuples for the matching calendars
+        """
+        calendar_list = "\n".join(
+            [f"  - ID: {cal_id}, Account: {source}" for cal_id, source in calendar_info]
+        )
+        message = (
+            f"Multiple calendars named '{calendar_name}' found:\n{calendar_list}\n\n"
+            f"Please use the list_calendars tool to see all calendar IDs, "
+            f"then specify the calendar_id parameter."
+        )
+        super().__init__(message)
 
 
 class NoSuchEventException(Exception):

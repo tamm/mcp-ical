@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.mcp_ical.ical import CalendarManager, NoSuchCalendarException
+from src.mcp_ical.ical import CalendarManager, MultipleCalendarsException, NoSuchCalendarException
 from src.mcp_ical.models import (
     CalendarInfo,
     CreateEventRequest,
@@ -545,3 +545,221 @@ def test_all_day_event_mixed_reminders(calendar_manager, test_event_base, test_c
     assert 120 in actual_alarms, "2 hour reminder not found"
     assert 1440 in actual_alarms, "1 day reminder not found"
     assert 4320 in actual_alarms, "3 day reminder not found"
+
+
+def test_create_event_with_duplicate_calendar_names(calendar_manager):
+    """Test creating events when multiple calendars have the same name"""
+    # Create two calendars with the same name
+    dup_name = f"test_duplicate_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    cal1 = calendar_manager._create_calendar(dup_name)
+    cal2 = calendar_manager._create_calendar(dup_name)
+
+    assert cal1 is not None, "Failed to create first calendar"
+    assert cal2 is not None, "Failed to create second calendar"
+    assert cal1.uniqueIdentifier() != cal2.uniqueIdentifier(), "Calendar IDs should be different"
+
+    event1 = None
+    event2 = None
+
+    try:
+        # Using calendar_name should raise MultipleCalendarsException
+        with pytest.raises(MultipleCalendarsException) as exc_info:
+            calendar_manager.create_event(
+                CreateEventRequest(
+                    title="Test Event",
+                    start_time=datetime.now() + timedelta(days=1),
+                    end_time=datetime.now() + timedelta(days=1, hours=1),
+                    calendar_name=dup_name,
+                )
+            )
+
+        # Verify error message contains helpful info
+        assert "Multiple calendars" in str(exc_info.value)
+        assert dup_name in str(exc_info.value)
+        assert "calendar_id" in str(exc_info.value)
+
+        # Using calendar_id should work fine
+        event1 = calendar_manager.create_event(
+            CreateEventRequest(
+                title="Test Event 1",
+                start_time=datetime.now() + timedelta(days=1),
+                end_time=datetime.now() + timedelta(days=1, hours=1),
+                calendar_id=cal1.uniqueIdentifier(),
+            )
+        )
+
+        event2 = calendar_manager.create_event(
+            CreateEventRequest(
+                title="Test Event 2",
+                start_time=datetime.now() + timedelta(days=1),
+                end_time=datetime.now() + timedelta(days=1, hours=1),
+                calendar_id=cal2.uniqueIdentifier(),
+            )
+        )
+
+        # Verify events are in different calendars
+        assert event1._raw_event.calendar().uniqueIdentifier() == cal1.uniqueIdentifier()
+        assert event2._raw_event.calendar().uniqueIdentifier() == cal2.uniqueIdentifier()
+
+    finally:
+        # Cleanup
+        if event1:
+            calendar_manager.delete_event(event1.identifier)
+        if event2:
+            calendar_manager.delete_event(event2.identifier)
+        calendar_manager._delete_calendar(cal1.uniqueIdentifier())
+        calendar_manager._delete_calendar(cal2.uniqueIdentifier())
+
+
+def test_list_events_with_duplicate_calendar_names(calendar_manager):
+    """Test listing events filtered by calendar when multiple calendars have same name"""
+    # Create two calendars with the same name
+    dup_name = f"test_duplicate_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    cal1 = calendar_manager._create_calendar(dup_name)
+    cal2 = calendar_manager._create_calendar(dup_name)
+
+    event1 = None
+    event2 = None
+
+    try:
+        # Create events in each calendar
+        event1 = calendar_manager.create_event(
+            CreateEventRequest(
+                title="Event in Calendar 1",
+                start_time=datetime.now() + timedelta(days=1),
+                end_time=datetime.now() + timedelta(days=1, hours=1),
+                calendar_id=cal1.uniqueIdentifier(),
+            )
+        )
+
+        event2 = calendar_manager.create_event(
+            CreateEventRequest(
+                title="Event in Calendar 2",
+                start_time=datetime.now() + timedelta(days=1),
+                end_time=datetime.now() + timedelta(days=1, hours=1),
+                calendar_id=cal2.uniqueIdentifier(),
+            )
+        )
+
+        # Listing with calendar_name should raise exception
+        with pytest.raises(MultipleCalendarsException):
+            calendar_manager.list_events(
+                start_time=datetime.now(),
+                end_time=datetime.now() + timedelta(days=2),
+                calendar_name=dup_name,
+            )
+
+        # Listing with calendar_id should work and only return events from that calendar
+        events_cal1 = calendar_manager.list_events(
+            start_time=datetime.now(),
+            end_time=datetime.now() + timedelta(days=2),
+            calendar_id=cal1.uniqueIdentifier(),
+        )
+
+        events_cal2 = calendar_manager.list_events(
+            start_time=datetime.now(),
+            end_time=datetime.now() + timedelta(days=2),
+            calendar_id=cal2.uniqueIdentifier(),
+        )
+
+        # Verify events are filtered correctly
+        cal1_titles = [e.title for e in events_cal1]
+        cal2_titles = [e.title for e in events_cal2]
+
+        assert "Event in Calendar 1" in cal1_titles
+        assert "Event in Calendar 2" not in cal1_titles
+
+        assert "Event in Calendar 2" in cal2_titles
+        assert "Event in Calendar 1" not in cal2_titles
+
+    finally:
+        # Cleanup
+        if event1:
+            calendar_manager.delete_event(event1.identifier)
+        if event2:
+            calendar_manager.delete_event(event2.identifier)
+        calendar_manager._delete_calendar(cal1.uniqueIdentifier())
+        calendar_manager._delete_calendar(cal2.uniqueIdentifier())
+
+
+def test_update_event_move_to_duplicate_calendar(calendar_manager):
+    """Test moving an event to a calendar when multiple calendars have same name"""
+    # Create test calendar for initial event
+    initial_cal_name = f"test_initial_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    initial_cal = calendar_manager._create_calendar(initial_cal_name)
+
+    # Create two calendars with the same name
+    dup_name = f"test_duplicate_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    cal1 = calendar_manager._create_calendar(dup_name)
+    cal2 = calendar_manager._create_calendar(dup_name)
+
+    event = None
+
+    try:
+        # Create event in initial calendar
+        event = calendar_manager.create_event(
+            CreateEventRequest(
+                title="Test Event",
+                start_time=datetime.now() + timedelta(days=1),
+                end_time=datetime.now() + timedelta(days=1, hours=1),
+                calendar_id=initial_cal.uniqueIdentifier(),
+            )
+        )
+
+        # Moving to duplicate calendar by name should raise exception
+        with pytest.raises(MultipleCalendarsException):
+            calendar_manager.update_event(
+                event.identifier,
+                UpdateEventRequest(calendar_name=dup_name),
+            )
+
+        # Moving with calendar_id should work
+        updated_event = calendar_manager.update_event(
+            event.identifier,
+            UpdateEventRequest(calendar_id=cal1.uniqueIdentifier()),
+        )
+
+        # Verify event was moved
+        assert updated_event._raw_event.calendar().uniqueIdentifier() == cal1.uniqueIdentifier()
+
+    finally:
+        # Cleanup
+        if event:
+            calendar_manager.delete_event(event.identifier)
+        calendar_manager._delete_calendar(initial_cal.uniqueIdentifier())
+        calendar_manager._delete_calendar(cal1.uniqueIdentifier())
+        calendar_manager._delete_calendar(cal2.uniqueIdentifier())
+
+
+def test_find_calendar_by_id_and_name(calendar_manager):
+    """Test the unified _find_calendar method with both ID and name"""
+    # Create a test calendar
+    cal_name = f"test_find_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    cal = calendar_manager._create_calendar(cal_name)
+
+    try:
+        # Find by ID should work
+        found_by_id = calendar_manager._find_calendar(calendar_id=cal.uniqueIdentifier())
+        assert found_by_id is not None
+        assert found_by_id.uniqueIdentifier() == cal.uniqueIdentifier()
+
+        # Find by name should work (when unique)
+        found_by_name = calendar_manager._find_calendar(calendar_name=cal_name)
+        assert found_by_name is not None
+        assert found_by_name.uniqueIdentifier() == cal.uniqueIdentifier()
+
+        # If both provided, ID should take precedence
+        found_both = calendar_manager._find_calendar(
+            calendar_id=cal.uniqueIdentifier(), calendar_name="WrongName"
+        )
+        assert found_both is not None
+        assert found_both.uniqueIdentifier() == cal.uniqueIdentifier()
+
+        # Neither provided should raise error
+        with pytest.raises(ValueError):
+            calendar_manager._find_calendar()
+
+    finally:
+        calendar_manager._delete_calendar(cal.uniqueIdentifier())

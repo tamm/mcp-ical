@@ -6,7 +6,7 @@ from textwrap import dedent
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
-from .ical import CalendarManager
+from .ical import CalendarManager, MultipleCalendarsException
 from .models import CreateEventRequest, UpdateEventRequest
 
 mcp = FastMCP("Calendar")
@@ -82,7 +82,12 @@ async def list_calendars() -> str:
 
 
 @mcp.tool()
-async def list_events(start_date: datetime, end_date: datetime, calendar_name: str | None = None) -> str:
+async def list_events(
+    start_date: datetime,
+    end_date: datetime,
+    calendar_name: str | None = None,
+    calendar_id: str | None = None,
+) -> str:
     """List calendar events in a date range.
 
     The start_date should always use the time such that it represents the beginning of that day (00:00:00).
@@ -92,16 +97,22 @@ async def list_events(start_date: datetime, end_date: datetime, calendar_name: s
     Args:
         start_date: Start date in ISO8601 format (YYYY-MM-DDT00:00:00).
         end_date: Optional end date in ISO8601 format (YYYY-MM-DDT23:59:59).
-        calendar_name: Optional calendar name to filter by
+        calendar_name: Optional calendar name to filter by (for backward compatibility)
+        calendar_id: Optional calendar ID to filter by (preferred when multiple calendars have same name)
+
+    Note: If both calendar_id and calendar_name are provided, calendar_id takes precedence.
     """
     try:
         manager = get_calendar_manager()
-        events = manager.list_events(start_date, end_date, calendar_name)
+        events = manager.list_events(start_date, end_date, calendar_name, calendar_id)
         if not events:
-            return "No events found in the specified date range"
+            cal_filter = f" in calendar {calendar_id or calendar_name}" if (calendar_id or calendar_name) else ""
+            return f"No events found in the specified date range{cal_filter}"
 
         return "".join([str(event) for event in events])
 
+    except MultipleCalendarsException as e:
+        return f"Error: {str(e)}"
     except Exception as e:
         return f"Error listing events: {str(e)}"
 
@@ -124,6 +135,7 @@ async def create_event(create_event_request: CreateEventRequest) -> str:
         notes: Optional event notes/description. Ask user if they want to add notes.
         location: Optional event location. Ask user if they want to specify a location.
         calendar_name: Optional calendar name. Ask user which calendar to use, referencing calendars://list.
+        calendar_id: Optional calendar ID (preferred when multiple calendars have the same name).
         all_day: Whether this is an all-day event
         reminder_offsets: List of minutes before the event to trigger reminders\
             e.g. [60, 1440] means two reminders, the first 24 hours before the event and the second one hour before.
@@ -153,6 +165,8 @@ async def create_event(create_event_request: CreateEventRequest) -> str:
 
         return f"Successfully created event: {event.title} (ID: {event.identifier})"
 
+    except MultipleCalendarsException as e:
+        return f"Error: {str(e)}"
     except Exception as e:
         return f"Error creating event: {str(e)}"
 
@@ -177,6 +191,7 @@ async def update_event(event_id: str, update_event_request: UpdateEventRequest) 
         notes: Optional new notes/description. Ask user if they want to update notes.
         location: Optional new location. Ask user if they want to specify/update location.
         calendar_name: Optional new calendar. Ask user which calendar to use, referencing calendars://list.
+        calendar_id: Optional calendar ID (preferred when multiple calendars have the same name).
         all_day: Optional all-day flag
         reminder_offsets: List of minutes before the event to trigger reminders\
             e.g. [60, 1440] means two reminders, the first 24 hours before the event and the second one hour before.
@@ -204,6 +219,8 @@ async def update_event(event_id: str, update_event_request: UpdateEventRequest) 
 
         return f"Successfully updated event: {event.title}"
 
+    except MultipleCalendarsException as e:
+        return f"Error: {str(e)}"
     except Exception as e:
         return f"Error updating event: {str(e)}"
 
