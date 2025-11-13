@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import IntEnum
 from typing import Annotated, Self
 
@@ -30,13 +30,39 @@ class Weekday(IntEnum):
 
 
 def convert_datetime(v):
+    """Convert various datetime representations to timezone-aware datetime objects.
+
+    This ensures all datetimes in our Event model are timezone-aware, preventing
+    ambiguity and enabling proper cross-timezone operations.
+
+    Args:
+        v: Can be NSDate (from EventKit), ISO string, or datetime object
+
+    Returns:
+        datetime: Timezone-aware datetime in local timezone
+    """
     if hasattr(v, "timeIntervalSince1970"):
-        return datetime.fromtimestamp(v.timeIntervalSince1970())
+        # NSDate from EventKit - convert to timezone-aware datetime in local timezone
+        timestamp = v.timeIntervalSince1970()
+        # Create UTC datetime first, then convert to local timezone with tzinfo
+        utc_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        return utc_dt.astimezone()  # Convert to local timezone, preserving tzinfo
 
     if isinstance(v, str):
-        return datetime.fromisoformat(v)
+        # ISO format string - fromisoformat handles both naive and aware strings
+        dt = datetime.fromisoformat(v)
+        # If string was naive, assume local timezone
+        if dt.tzinfo is None:
+            # Get local timezone by converting a known UTC time
+            local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+            return dt.replace(tzinfo=local_tz)
+        return dt
 
     if isinstance(v, datetime):
+        # If already a datetime but naive, assume local timezone
+        if v.tzinfo is None:
+            local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+            return v.replace(tzinfo=local_tz)
         return v
 
     # If we don't recognize the type, let Pydantic handle it
@@ -140,7 +166,8 @@ class Event:
                 interval=rule.interval(),
                 days_of_week=days,
                 # Only set one of end_date or occurrence_count
-                end_date=rule.recurrenceEnd().endDate()
+                # Use convert_datetime to make end_date timezone-aware
+                end_date=convert_datetime(rule.recurrenceEnd().endDate())
                 if rule.recurrenceEnd() and not rule.recurrenceEnd().occurrenceCount()
                 else None,
                 occurrence_count=rule.recurrenceEnd().occurrenceCount()
@@ -150,8 +177,9 @@ class Event:
 
         return cls(
             title=ekevent.title(),
-            start_time=ekevent.startDate(),
-            end_time=ekevent.endDate(),
+            # Convert all datetime fields to timezone-aware
+            start_time=convert_datetime(ekevent.startDate()),
+            end_time=convert_datetime(ekevent.endDate()),
             calendar_name=ekevent.calendar().title(),
             location=ekevent.location(),
             notes=ekevent.notes(),
@@ -163,7 +191,7 @@ class Event:
             status=ekevent.status(),
             organizer=str(ekevent.organizer().name()) if ekevent.organizer() else None,
             attendees=attendees,
-            last_modified=ekevent.lastModifiedDate(),
+            last_modified=convert_datetime(ekevent.lastModifiedDate()) if ekevent.lastModifiedDate() else None,
             identifier=ekevent.eventIdentifier(),
             _raw_event=ekevent,
         )
@@ -173,20 +201,28 @@ class Event:
         attendees_list = ", ".join(self.attendees) if self.attendees else "None"
         alarms_list = ", ".join(map(str, self.alarms_minutes_offsets)) if self.alarms_minutes_offsets else "None"
 
+        # Format datetime in ISO 8601 format with timezone offset
+        def format_dt(dt):
+            if dt is None:
+                return "N/A"
+            # Use isoformat() for standard ISO 8601 representation with timezone
+            # e.g., "2025-11-14T14:00:00+11:00" or "2025-11-14T03:00:00-08:00"
+            return dt.isoformat()
+
         recurrence_info = "No recurrence"
         if self.recurrence_rule:
             recurrence_info = (
                 f"Recurrence: {self.recurrence_rule.frequency.name}, "
                 f"Interval: {self.recurrence_rule.interval}, "
-                f"End Date: {self.recurrence_rule.end_date or 'N/A'}, "
+                f"End Date: {format_dt(self.recurrence_rule.end_date)}, "
                 f"Occurrences: {self.recurrence_rule.occurrence_count or 'N/A'}"
             )
 
         return (
             f"Event: {self.title},\n"
             f" - Identifier: {self.identifier},\n"
-            f" - Start Time: {self.start_time},\n"
-            f" - End Time: {self.end_time},\n"
+            f" - Start Time: {format_dt(self.start_time)},\n"
+            f" - End Time: {format_dt(self.end_time)},\n"
             f" - Calendar: {self.calendar_name or 'N/A'},\n"
             f" - Location: {self.location or 'N/A'},\n"
             f" - Notes: {self.notes or 'N/A'},\n"
