@@ -405,21 +405,33 @@ class CalendarManager:
         return None
 
     def _search_occurrence_by_datetime(self, event_id: str, target_datetime: datetime) -> Event | None:
-        """Search for occurrence by datetime.
+        """Search for occurrence by datetime with timezone-aware matching.
 
         Uses a minimal ±1 minute search window (required by EventKit's predicate API),
-        then does exact datetime matching with ==.
+        then does timezone-normalized datetime matching.
+
+        Args:
+            event_id: The event identifier
+            target_datetime: The datetime to match (can be timezone-aware or naive)
+
+        Returns:
+            Event if found, None otherwise
         """
-        search_start = target_datetime - timedelta(minutes=1)
-        search_end = target_datetime + timedelta(minutes=1)
+        # Convert search window to naive local time for EventKit
+        search_start_naive = to_eventkit_datetime(target_datetime - timedelta(minutes=1))
+        search_end_naive = to_eventkit_datetime(target_datetime + timedelta(minutes=1))
 
         predicate = self.event_store.predicateForEventsWithStartDate_endDate_calendars_(
-            search_start, search_end, None
+            search_start_naive, search_end_naive, None
         )
         events = self.event_store.eventsMatchingPredicate_(predicate)
 
+        # Convert target to naive local time for matching against EventKit's naive times
+        target_naive = to_eventkit_datetime(target_datetime)
+
         for ekevent in events:
-            if ekevent.eventIdentifier() == event_id and ekevent.startDate() == target_datetime:
+            # EventKit returns naive datetimes in local timezone
+            if ekevent.eventIdentifier() == event_id and ekevent.startDate() == target_naive:
                 logger.debug(f"Found occurrence for {event_id} at {target_datetime}")
                 return Event.from_ekevent(ekevent)
 
