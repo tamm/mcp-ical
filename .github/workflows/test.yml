@@ -1,0 +1,59 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Verify uv installation
+      run: uv --version
+
+    - name: Install dependencies
+      run: |
+        uv sync --dev
+
+    - name: Grant Calendar access (via TCC database)
+      run: |
+        # This attempts to pre-authorize calendar access for the Python process
+        # Note: This may not work on all macOS runners due to SIP restrictions
+        sudo sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db \
+          "INSERT OR REPLACE INTO access VALUES('kTCCServiceCalendar','/usr/local/bin/python3',0,2,0,1,NULL,NULL,0,'UNUSED',NULL,0,1687276800);" 2>/dev/null || true
+
+        # Alternative: Create a minimal Calendar to ensure Calendar.app is initialized
+        osascript -e 'tell application "Calendar" to activate' || true
+        osascript -e 'tell application "Calendar" to quit' || true
+
+    - name: Run tests
+      run: |
+        uv run pytest tests -v --tb=short
+      continue-on-error: false
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: |
+          .pytest_cache/
+          tests/
+        retention-days: 7
