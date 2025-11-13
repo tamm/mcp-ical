@@ -224,3 +224,13 @@ class UpdateEventRequest(BaseModel):
     url: str | None = None
     all_day: bool | None = None
     recurrence_rule: RecurrenceRule | None = None
+
+
+@dataclass
+class CalendarInfo:
+    """Information about a calendar including its unique identifier and source."""
+
+    calendar_id: str
+    calendar_name: str
+    source_name: str
+    source_type: str

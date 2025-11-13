@@ -5,6 +5,7 @@ import pytest
 
 from src.mcp_ical.ical import CalendarManager, NoSuchCalendarException
 from src.mcp_ical.models import (
+    CalendarInfo,
     CreateEventRequest,
     Frequency,
     RecurrenceRule,
@@ -82,6 +83,31 @@ def test_event_base():
         "notes": "Test notes",
         "location": "Test location",
     }
+
+
+def test_get_calendars_info(calendar_manager, test_calendar):
+    """Test getting detailed calendar information with IDs and source info"""
+    calendars_info = calendar_manager.get_calendars_info()
+
+    # Should return a list
+    assert isinstance(calendars_info, list)
+    assert len(calendars_info) > 0
+
+    # Each item should be a CalendarInfo object with required fields
+    for cal_info in calendars_info:
+        assert isinstance(cal_info, CalendarInfo)
+        assert cal_info.calendar_id  # Should have a unique ID
+        assert cal_info.calendar_name  # Should have a name
+        assert cal_info.source_name  # Should have a source name
+        assert cal_info.source_type  # Should have a source type
+
+    # Verify our test calendar is in the list
+    test_cal_names = [cal.calendar_name for cal in calendars_info]
+    assert test_calendar["name"] in test_cal_names
+
+    # Verify calendar IDs are unique
+    calendar_ids = [cal.calendar_id for cal in calendars_info]
+    assert len(calendar_ids) == len(set(calendar_ids)), "Calendar IDs should be unique"
 
 
 def test_create_and_get_event(calendar_manager, test_event_base, test_calendar, cleanup_events):

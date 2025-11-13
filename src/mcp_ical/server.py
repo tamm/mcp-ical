@@ -57,14 +57,25 @@ def get_calendars() -> str:
 
 @mcp.tool()
 async def list_calendars() -> str:
-    """List all available calendars."""
+    """List all available calendars with their unique identifiers and source information.
+
+    This helps differentiate calendars with the same name from different accounts.
+    """
     try:
         manager = get_calendar_manager()
-        calendars = manager.list_calendar_names()
-        if not calendars:
+        calendars_info = manager.get_calendars_info()
+        if not calendars_info:
             return "No calendars found"
 
-        return "Available calendars:\n" + "\n".join(f"- {calendar}" for calendar in calendars)
+        result = ["Available calendars:\n"]
+        for cal_info in calendars_info:
+            result.append(
+                f"- {cal_info.calendar_name}\n"
+                f"  ID: {cal_info.calendar_id}\n"
+                f"  Account: {cal_info.source_name} ({cal_info.source_type})"
+            )
+
+        return "\n".join(result)
 
     except Exception as e:
         return f"Error listing calendars: {str(e)}"

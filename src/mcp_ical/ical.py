@@ -355,6 +355,53 @@ class CalendarManager:
         """
         return self.event_store.calendars()
 
+    def get_calendars_info(self) -> list["CalendarInfo"]:
+        """Get detailed information about all available calendars
+
+        Returns:
+            list[CalendarInfo]: A list of calendar information objects containing
+                               calendar ID, name, source name, and source type
+        """
+        from mcp_ical.models import CalendarInfo
+
+        calendars = self.event_store.calendars()
+        calendar_info_list = []
+
+        for calendar in calendars:
+            source = calendar.source()
+            source_type = self._get_source_type_name(source.sourceType())
+
+            calendar_info_list.append(
+                CalendarInfo(
+                    calendar_id=calendar.calendarIdentifier(),
+                    calendar_name=calendar.title(),
+                    source_name=source.title(),
+                    source_type=source_type,
+                )
+            )
+
+        return calendar_info_list
+
+    def _get_source_type_name(self, source_type: int) -> str:
+        """Convert source type integer to human-readable name
+
+        Args:
+            source_type: Integer representing the source type
+
+        Returns:
+            str: Human-readable source type name
+        """
+        # Based on EKSourceType enum values
+        source_types = {
+            0: "Local",
+            1: "Exchange",
+            2: "CalDAV",
+            3: "MobileMe",
+            4: "Subscribed",
+            5: "Birthdays",
+        }
+        return source_types.get(source_type, f"Unknown ({source_type})")
+
     def _request_access(self) -> bool:
         """Request access to interact with the MacOS calendar"""
         semaphore = Semaphore(0)
