@@ -136,19 +136,44 @@ class CalendarManager:
             logger.exception(e)
             raise
 
-    def update_event(self, event_id: str, request: UpdateEventRequest) -> Event:
-        """Update an existing event by its identifier
+    def update_event(
+        self,
+        event_id: str,
+        request: UpdateEventRequest,
+        update_future_events: bool = False,
+        occurrence_date: datetime | None = None,
+    ) -> Event:
+        """Update an existing event or a specific occurrence of a recurring event.
 
         Args:
             event_id: The unique identifier of the event to update
             request: The update request containing the fields to modify
+            update_future_events: When True with occurrence_date, updates this occurrence and all future ones.
+                                 When False (default) with occurrence_date, updates only this specific occurrence.
+                                 Ignored when occurrence_date is None.
+            occurrence_date: The exact start time of the occurrence to update.
+                           If provided, updates only that specific occurrence.
+                           If None, updates all occurrences (existing behavior).
 
         Returns:
-            Event | None: The updated event if successful, None if failed
+            Event: The updated event if successful
+
+        Raises:
+            NoSuchEventException: If the event or occurrence is not found
+            NoSuchCalendarException: If the requested calendar doesn't exist
         """
-        existing_event = self.find_event_by_id(event_id)
-        if not existing_event:
-            raise NoSuchEventException(event_id)
+        # If updating a specific occurrence, find it; otherwise find the master event
+        if occurrence_date:
+            existing_event = self.find_event_occurrence(event_id, occurrence_date)
+            if not existing_event:
+                raise NoSuchEventException(
+                    f"{event_id} at {occurrence_date.isoformat()} - occurrence not found"
+                )
+            logger.info(f"Found occurrence for update at {occurrence_date.isoformat()}")
+        else:
+            existing_event = self.find_event_by_id(event_id)
+            if not existing_event:
+                raise NoSuchEventException(event_id)
 
         existing_ek_event = existing_event._raw_event
         if not existing_ek_event:
@@ -192,14 +217,32 @@ class CalendarManager:
             existing_ek_event.setAlarms_(alarms)
 
         try:
-            # Use EKSpanFutureEvents to update all future events in the case the event is a recurring one
-            success, error = self.event_store.saveEvent_span_error_(existing_ek_event, EKSpanFutureEvents, None)
+            # Determine the correct span based on parameters
+            # - If occurrence_date is provided and update_future_events is True: update this and all future
+            # - If occurrence_date is provided and update_future_events is False: update only this one
+            # - If occurrence_date is None: update all occurrences (backward compatibility)
+            if occurrence_date and update_future_events:
+                span = EKSpanFutureEvents  # This occurrence and all future ones
+            elif occurrence_date:
+                span = EKSpanThisEvent  # Only this specific occurrence
+            else:
+                span = EKSpanFutureEvents  # All occurrences (maintains backward compatibility)
+
+            success, error = self.event_store.saveEvent_span_error_(existing_ek_event, span, None)
 
             if not success:
                 logger.error(f"Failed to update event: {error}")
                 raise Exception(error)
 
-            logger.info(f"Successfully updated event: {request.title or existing_event.title}")
+            # Build log message based on what was updated
+            if occurrence_date and update_future_events:
+                scope = f"occurrence at {occurrence_date.isoformat()} and all future occurrences"
+            elif occurrence_date:
+                scope = f"occurrence at {occurrence_date.isoformat()}"
+            else:
+                scope = "all occurrences"
+
+            logger.info(f"Successfully updated {scope}: {request.title or existing_event.title}")
             return Event.from_ekevent(existing_ek_event)
 
         except Exception as e:

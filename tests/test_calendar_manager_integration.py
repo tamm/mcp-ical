@@ -519,3 +519,128 @@ def test_all_day_event_mixed_reminders(calendar_manager, test_event_base, test_c
     assert 120 in actual_alarms, "2 hour reminder not found"
     assert 1440 in actual_alarms, "1 day reminder not found"
     assert 4320 in actual_alarms, "3 day reminder not found"
+
+
+def test_update_recurring_event_single_occurrence(calendar_manager, test_event_base, test_calendar):
+    """Test updating just one occurrence of a recurring event (with occurrence_date, default update_future_events=False)"""
+    # Create recurring event (5 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=5)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event - Update One",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    # Update the 3rd occurrence only (relies on default update_future_events=False)
+    third_occurrence_date = test_event_base["start_time"] + timedelta(days=2)
+    updated_title = "Updated Third Occurrence"
+    updated_event = calendar_manager.update_event(
+        event.identifier,
+        UpdateEventRequest(title=updated_title),
+        occurrence_date=third_occurrence_date,
+    )
+    assert updated_event.title == updated_title
+
+    # Verify only one occurrence was updated
+    events = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=7),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events) == 5
+
+    # Check that other occurrences still have the original title
+    original_count = sum(1 for e in events if e.title == "Recurring Event - Update One")
+    updated_count = sum(1 for e in events if e.title == updated_title)
+    assert original_count == 4, "Expected 4 occurrences with original title"
+    assert updated_count == 1, "Expected 1 occurrence with updated title"
+
+    # Clean up
+    calendar_manager.delete_event(event.identifier, delete_entire_series=True)
+
+
+def test_update_recurring_event_from_occurrence_forward(calendar_manager, test_event_base, test_calendar):
+    """Test updating from a specific occurrence forward (occurrence_date + update_future_events=True)"""
+    # Create recurring event (5 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=5)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event - Update Forward",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    # Update from the 3rd occurrence forward
+    third_occurrence_date = test_event_base["start_time"] + timedelta(days=2)
+    updated_title = "Updated From Third Forward"
+    updated_event = calendar_manager.update_event(
+        event.identifier,
+        UpdateEventRequest(title=updated_title),
+        update_future_events=True,
+        occurrence_date=third_occurrence_date,
+    )
+    assert updated_event.title == updated_title
+
+    # Verify occurrences 3, 4, 5 were updated but 1, 2 were not
+    events = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=7),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events) == 5
+
+    # Check titles
+    original_count = sum(1 for e in events if e.title == "Recurring Event - Update Forward")
+    updated_count = sum(1 for e in events if e.title == updated_title)
+    assert original_count == 2, "Expected 2 occurrences with original title (1st and 2nd)"
+    assert updated_count == 3, "Expected 3 occurrences with updated title (3rd, 4th, 5th)"
+
+    # Clean up
+    calendar_manager.delete_event(event.identifier, delete_entire_series=True)
+
+
+def test_update_recurring_event_all_occurrences(calendar_manager, test_event_base, test_calendar):
+    """Test updating all occurrences of a recurring event (no occurrence_date)"""
+    # Create recurring event (5 daily occurrences)
+    recurrence_rule = RecurrenceRule(frequency=Frequency.DAILY, interval=1, occurrence_count=5)
+
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Recurring Event - Update All",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            recurrence_rule=recurrence_rule,
+            calendar_name=test_calendar["name"],
+        )
+    )
+
+    # Update all occurrences (no occurrence_date)
+    updated_title = "All Updated"
+    updated_event = calendar_manager.update_event(
+        event.identifier, UpdateEventRequest(title=updated_title)
+    )
+    assert updated_event.title == updated_title
+
+    # Verify all occurrences were updated
+    events = calendar_manager.list_events(
+        start_time=test_event_base["start_time"],
+        end_time=test_event_base["start_time"] + timedelta(days=7),
+        calendar_name=test_calendar["name"],
+    )
+    assert len(events) == 5
+
+    # Check all have updated title
+    updated_count = sum(1 for e in events if e.title == updated_title)
+    assert updated_count == 5, "Expected all 5 occurrences to have updated title"
+
+    # Clean up
+    calendar_manager.delete_event(event.identifier, delete_entire_series=True)
