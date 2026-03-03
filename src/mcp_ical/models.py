@@ -201,13 +201,21 @@ class Event:
         attendees_list = ", ".join(self.attendees) if self.attendees else "None"
         alarms_list = ", ".join(map(str, self.alarms_minutes_offsets)) if self.alarms_minutes_offsets else "None"
 
-        # Format datetime in ISO 8601 format with timezone offset
+        # Format datetime with BOTH ISO 8601 (for machine use) and human-readable local time.
+        # IMPORTANT FOR AI CONSUMERS: Always use the "Local time" field when displaying times
+        # to users or assigning events to calendar days. The ISO timestamp includes a UTC offset
+        # — do NOT read just the date portion without applying the offset first. The local time
+        # string is pre-converted and unambiguous.
         def format_dt(dt):
             if dt is None:
                 return "N/A"
-            # Use isoformat() for standard ISO 8601 representation with timezone
-            # e.g., "2025-11-14T14:00:00+11:00" or "2025-11-14T03:00:00-08:00"
-            return dt.isoformat()
+            iso = dt.isoformat()
+            # Human-readable in local timezone (%-d avoids leading zero on macOS/Linux)
+            try:
+                local = dt.astimezone().strftime("%-d %b %Y %A %-I:%M %p %Z")
+            except Exception:
+                local = iso
+            return f"{iso} (Local time: {local})"
 
         recurrence_info = "No recurrence"
         if self.recurrence_rule:
@@ -247,6 +255,7 @@ class CreateEventRequest(BaseModel):
     url: str | None = None
     all_day: bool = False
     recurrence_rule: RecurrenceRule | None = None
+    attendees: list[str] | None = None
 
 
 class UpdateEventRequest(BaseModel):
@@ -260,3 +269,4 @@ class UpdateEventRequest(BaseModel):
     url: str | None = None
     all_day: bool | None = None
     recurrence_rule: RecurrenceRule | None = None
+    attendees: list[str] | None = None

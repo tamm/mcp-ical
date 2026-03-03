@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from threading import Semaphore
@@ -62,6 +63,105 @@ def to_eventkit_datetime(dt: datetime) -> datetime:
         return dt.astimezone().replace(tzinfo=None)
     # Naive: pass through as-is (assume it's already local time)
     return dt
+
+
+def add_attendees_via_applescript(event_id: str, attendee_emails: list[str], event_title: str) -> None:
+    """Add attendees to an existing calendar event using AppleScript.
+
+    EventKit's attendees property is read-only, but macOS Calendar.app's AppleScript
+    interface supports adding attendees. This function uses AppleScript to add
+    attendees to an already-created event.
+
+    Args:
+        event_id: The EventKit identifier of the event (from event.eventIdentifier())
+        attendee_emails: List of email addresses (can be "Name <email@example.com>" format)
+        event_title: The title/summary of the event (used for finding the event)
+
+    Raises:
+        Exception: If AppleScript execution fails
+    """
+    if not attendee_emails:
+        return
+
+    import time
+
+    # Give Calendar.app a moment to sync with EventKit
+    # Also launch Calendar.app to ensure it's running
+    try:
+        subprocess.run(["open", "-a", "Calendar"], check=False, timeout=5)
+        time.sleep(2)  # Give it more time to sync
+    except Exception:
+        pass
+
+    # Build list of attendees for AppleScript
+    attendees_data = []
+    for email_str in attendee_emails:
+        # Parse email - support both "email@example.com" and "Name <email@example.com>" formats
+        email_str = email_str.strip()
+
+        if "<" in email_str and ">" in email_str:
+            # Extract name and email from "Name <email@example.com>" format
+            parts = email_str.split("<")
+            name = parts[0].strip().replace('"', '\\"')  # Escape quotes
+            email = parts[1].replace(">", "").strip()
+        else:
+            email = email_str
+            name = email.split("@")[0] if "@" in email else email
+
+        attendees_data.append((name, email))
+
+    # Escape the event title for AppleScript
+    escaped_title = event_title.replace('"', '\\"')
+
+    # AppleScript to add all attendees to the event
+    # Search across all calendars for the event by summary
+    attendees_list = ", ".join(
+        [f'{{email:"{email}", display name:"{name}"}}' for name, email in attendees_data]
+    )
+
+    applescript = f'''
+    tell application "Calendar"
+        set allCalendars to every calendar
+        set foundEvent to missing value
+
+        repeat with cal in allCalendars
+            try
+                set matchingEvents to (every event of cal whose summary is "{escaped_title}")
+                if (count of matchingEvents) > 0 then
+                    set foundEvent to item 1 of matchingEvents
+                    exit repeat
+                end if
+            end try
+        end repeat
+
+        if foundEvent is not missing value then
+            tell foundEvent
+                repeat with attendeeData in {{{attendees_list}}}
+                    make new attendee with properties attendeeData
+                end repeat
+            end tell
+            return "success"
+        else
+            error "Event not found in any calendar"
+        end if
+    end tell
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", applescript],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                f"Failed to add attendees via AppleScript: {result.stderr}"
+            )
+        else:
+            logger.info(f"Successfully added {len(attendee_emails)} attendee(s) via AppleScript")
+    except Exception as e:
+        logger.warning(f"Exception adding attendees via AppleScript: {e}")
 
 
 class CalendarManager:
@@ -172,6 +272,19 @@ class CalendarManager:
                 raise Exception(error)
 
             logger.info(f"Successfully created event: {new_event.title}")
+
+            # Add attendees via AppleScript after event is saved
+            # EventKit doesn't support adding attendees programmatically, but Calendar.app's
+            # AppleScript interface does
+            if new_event.attendees:
+                try:
+                    add_attendees_via_applescript(
+                        ekevent.eventIdentifier(), new_event.attendees, new_event.title
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to add attendees via AppleScript: {e}")
+                    # Don't fail the entire event creation if attendees fail
+
             return Event.from_ekevent(ekevent)
 
         except Exception as e:
@@ -277,6 +390,19 @@ class CalendarManager:
             if not success:
                 logger.error(f"Failed to update event: {error}")
                 raise Exception(error)
+
+            # Update attendees via AppleScript after event is saved
+            # EventKit doesn't support modifying attendees programmatically, but Calendar.app's
+            # AppleScript interface does
+            if request.attendees is not None:
+                try:
+                    # Get the event title (use updated title if provided, otherwise existing)
+                    event_title = request.title if request.title else existing_event.title
+                    event_uid = existing_ek_event.eventIdentifier()
+                    add_attendees_via_applescript(event_uid, request.attendees, event_title)
+                except Exception as e:
+                    logger.warning(f"Failed to update attendees via AppleScript: {e}")
+                    # Don't fail the entire update if attendees fail
 
             # Build log message based on what was updated
             if occurrence_date and update_future_events:

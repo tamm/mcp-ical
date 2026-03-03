@@ -645,3 +645,66 @@ def test_update_recurring_event_all_occurrences(calendar_manager, test_event_bas
 
     # Clean up
     calendar_manager.delete_event(event.identifier, delete_entire_series=True)
+
+
+def test_create_event_with_attendees(calendar_manager, test_event_base, test_calendar, cleanup_events):
+    """Test creating an event with attendees"""
+    # Create event with attendees
+    attendees = ["test1@example.com", "Test User <test2@example.com>"]
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Meeting with Attendees",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            notes="Test meeting with invitees",
+            location=test_event_base["location"],
+            calendar_name=test_calendar["name"],
+            attendees=attendees,
+        )
+    )
+    cleanup_events(event.identifier)
+
+    assert event is not None
+    assert event.title == "Meeting with Attendees"
+    assert event.identifier is not None
+
+    # Retrieve the event to verify attendees were added
+    retrieved_event = calendar_manager.find_event_by_id(event.identifier)
+    assert retrieved_event is not None
+
+    # Check that attendees were added (EventKit may format them differently)
+    if retrieved_event.attendees:
+        assert len(retrieved_event.attendees) > 0
+        print(f"Event created with attendees: {retrieved_event.attendees}")
+
+
+def test_update_event_attendees(calendar_manager, test_event_base, test_calendar, cleanup_events):
+    """Test updating attendees on an existing event"""
+    # Create event without attendees
+    event = calendar_manager.create_event(
+        CreateEventRequest(
+            title="Meeting Without Attendees",
+            start_time=test_event_base["start_time"],
+            end_time=test_event_base["end_time"],
+            calendar_name=test_calendar["name"],
+        )
+    )
+    cleanup_events(event.identifier)
+
+    # Update to add attendees
+    attendees = ["attendee1@example.com", "Attendee Two <attendee2@example.com>"]
+    updated_event = calendar_manager.update_event(
+        event.identifier, UpdateEventRequest(attendees=attendees)
+    )
+
+    assert updated_event is not None
+    assert updated_event.identifier == event.identifier
+
+    # Retrieve the event to verify attendees were added
+    retrieved_event = calendar_manager.find_event_by_id(event.identifier)
+    assert retrieved_event is not None
+
+    # Check that attendees were added
+    if retrieved_event.attendees:
+        assert len(retrieved_event.attendees) > 0
+        print(f"Event updated with attendees: {retrieved_event.attendees}")

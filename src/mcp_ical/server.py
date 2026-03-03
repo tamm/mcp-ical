@@ -74,15 +74,37 @@ async def list_calendars() -> str:
 async def list_events(start_date: datetime, end_date: datetime, calendar_name: str | None = None) -> str:
     """List calendar events in a date range.
 
+    TIMEZONE REQUIRED: start_date and end_date must include an explicit timezone.
+    Any of these formats are accepted:
+      - Local offset:  2026-03-04T00:00:00+11:00
+      - UTC offset:    2026-03-04T00:00:00+00:00
+      - UTC Z suffix:  2026-03-04T00:00:00Z
+    Omitting a timezone entirely will return an error.
+
     The start_date should always use the time such that it represents the beginning of that day (00:00:00).
     The end_date should always use the time such that it represents the end of that day (23:59:59).
     This way, range based searches are always inclusive and can locate all events in that date range.
 
     Args:
-        start_date: Start date in ISO8601 format (YYYY-MM-DDT00:00:00).
-        end_date: Optional end date in ISO8601 format (YYYY-MM-DDT23:59:59).
+        start_date: Start date in ISO8601 format with explicit timezone (e.g. 2026-03-04T00:00:00+11:00 or 2026-03-04T00:00:00Z).
+        end_date: End date in ISO8601 format with explicit timezone (e.g. 2026-03-04T23:59:59+11:00 or 2026-03-04T23:59:59Z).
         calendar_name: Optional calendar name to filter by
+
+    IMPORTANT — reading results: Each event shows times in TWO formats:
+    - ISO 8601 with UTC offset (e.g. 2026-03-03T22:00:00+00:00) — for machine use only
+    - "Local time: ..." — the pre-converted local time; USE THIS for display and day assignment
+
+    Day boundary warning: A UTC timestamp like 2026-03-03T22:00:00+00:00 is actually
+    2026-03-04 in AEDT (UTC+11). Always use the Local time field to determine which
+    calendar day an event belongs to.
     """
+    if start_date.tzinfo is None or end_date.tzinfo is None:
+        return (
+            "Error: start_date and end_date must include an explicit timezone. "
+            "Accepted formats: 2026-03-04T00:00:00+11:00 (local offset), 2026-03-04T00:00:00Z (UTC). "
+            "Naive datetimes are rejected to prevent day-boundary errors. "
+            "Re-submit with a timezone included."
+        )
     try:
         manager = get_calendar_manager()
         events = manager.list_events(start_date, end_date, calendar_name)
@@ -105,15 +127,20 @@ async def create_event(create_event_request: CreateEventRequest) -> str:
     3. Ask if they want to add any notes/description if none provided
     4. Confirm the date and time with the user
     5. Ask if they want to set reminders for the event
+    6. Ask if they want to invite anyone (attendees) to the event
 
     Args:
         title: Event title
-        start_time: Start time in ISO format (YYYY-MM-DDTHH:MM:SS)
-        end_time: End time in ISO format (YYYY-MM-DDTHH:MM:SS)
+        start_time: Start time in ISO format with explicit timezone (e.g. 2026-03-04T09:00:00+11:00 or 2026-03-04T09:00:00Z).
+        end_time: End time in ISO format with explicit timezone (e.g. 2026-03-04T10:00:00+11:00 or 2026-03-04T10:00:00Z).
         notes: Optional event notes/description. Ask user if they want to add notes.
         location: Optional event location. Ask user if they want to specify a location.
         calendar_name: Optional calendar name. Ask user which calendar to use, referencing calendars://list.
         all_day: Whether this is an all-day event
+        attendees: Optional list of email addresses to invite to the event.\
+            Supports both "email@example.com" and "Name <email@example.com>" formats.\
+            The calendar app will send invitations to these attendees.\
+            e.g. ["john@example.com", "Jane Doe <jane@example.com>"]
         reminder_offsets: List of minutes before the event to trigger reminders\
             e.g. [60, 1440] means two reminders, the first 24 hours before the event and the second one hour before.
         recurrence_rule: Optional recurrence rule for the event. This should be an instance of `RecurrenceRule` with the following fields:
@@ -176,6 +203,7 @@ async def update_event(
     5. Ask if they want to add/update location if not specified
     6. Ask if they want to add/update notes if not specified
     7. Ask if they want to set reminders for the event
+    8. Ask if they want to add/update attendees (invitees) for the event
 
     Args:
         event_id: Unique identifier of the event (master event ID for recurring events)
@@ -187,6 +215,10 @@ async def update_event(
             - location: Optional new location. Ask user if they want to specify/update location.
             - calendar_name: Optional new calendar. Ask user which calendar to use, referencing calendars://list.
             - all_day: Optional all-day flag
+            - attendees: Optional list of email addresses to invite to the event.\
+                Supports both "email@example.com" and "Name <email@example.com>" formats.\
+                The calendar app will send invitations to these attendees.\
+                e.g. ["john@example.com", "Jane Doe <jane@example.com>"]
             - reminder_offsets: List of minutes before the event to trigger reminders\
                 e.g. [60, 1440] means two reminders, the first 24 hours before the event and the second one hour before.
             - recurrence_rule: Optional recurrence rule for the event. This should be an instance of `RecurrenceRule` with the following fields:
