@@ -649,7 +649,6 @@ def test_update_recurring_event_all_occurrences(calendar_manager, test_event_bas
 
 def test_create_event_with_attendees(calendar_manager, test_event_base, test_calendar, cleanup_events):
     """Test creating an event with attendees"""
-    # Create event with attendees
     attendees = ["test1@example.com", "Test User <test2@example.com>"]
     event = calendar_manager.create_event(
         CreateEventRequest(
@@ -664,23 +663,22 @@ def test_create_event_with_attendees(calendar_manager, test_event_base, test_cal
     )
     cleanup_events(event.identifier)
 
-    assert event is not None
-    assert event.title == "Meeting with Attendees"
-    assert event.identifier is not None
+    # Give Calendar.app time to sync attendees back to EventKit
+    time.sleep(3)
 
-    # Retrieve the event to verify attendees were added
     retrieved_event = calendar_manager.find_event_by_id(event.identifier)
     assert retrieved_event is not None
+    assert retrieved_event.attendees is not None, "Attendees should not be None"
+    assert len(retrieved_event.attendees) >= 2, f"Expected at least 2 attendees, got {retrieved_event.attendees}"
 
-    # Check that attendees were added (EventKit may format them differently)
-    if retrieved_event.attendees:
-        assert len(retrieved_event.attendees) > 0
-        print(f"Event created with attendees: {retrieved_event.attendees}")
+    # Check emails appear in attendee strings (format is "Name <email>")
+    attendees_str = " ".join(retrieved_event.attendees).lower()
+    assert "test1@example.com" in attendees_str, f"test1@example.com not found in {retrieved_event.attendees}"
+    assert "test2@example.com" in attendees_str, f"test2@example.com not found in {retrieved_event.attendees}"
 
 
 def test_update_event_attendees(calendar_manager, test_event_base, test_calendar, cleanup_events):
     """Test updating attendees on an existing event"""
-    # Create event without attendees
     event = calendar_manager.create_event(
         CreateEventRequest(
             title="Meeting Without Attendees",
@@ -691,20 +689,21 @@ def test_update_event_attendees(calendar_manager, test_event_base, test_calendar
     )
     cleanup_events(event.identifier)
 
-    # Update to add attendees
     attendees = ["attendee1@example.com", "Attendee Two <attendee2@example.com>"]
     updated_event = calendar_manager.update_event(
         event.identifier, UpdateEventRequest(attendees=attendees)
     )
-
     assert updated_event is not None
-    assert updated_event.identifier == event.identifier
 
-    # Retrieve the event to verify attendees were added
+    # Attendees are added via AppleScript (external to EventKit), so reset the store cache
+    time.sleep(3)
+    calendar_manager.event_store.reset()
+
     retrieved_event = calendar_manager.find_event_by_id(event.identifier)
     assert retrieved_event is not None
+    assert retrieved_event.attendees is not None, "Attendees should not be None"
+    assert len(retrieved_event.attendees) >= 2, f"Expected at least 2 attendees, got {retrieved_event.attendees}"
 
-    # Check that attendees were added
-    if retrieved_event.attendees:
-        assert len(retrieved_event.attendees) > 0
-        print(f"Event updated with attendees: {retrieved_event.attendees}")
+    attendees_str = " ".join(retrieved_event.attendees).lower()
+    assert "attendee1@example.com" in attendees_str, f"attendee1@example.com not found in {retrieved_event.attendees}"
+    assert "attendee2@example.com" in attendees_str, f"attendee2@example.com not found in {retrieved_event.attendees}"

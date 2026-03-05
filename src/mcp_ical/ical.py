@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from threading import Semaphore
 from typing import Any
@@ -65,85 +66,121 @@ def to_eventkit_datetime(dt: datetime) -> datetime:
     return dt
 
 
-def add_attendees_via_applescript(event_id: str, attendee_emails: list[str], event_title: str) -> None:
+_calendar_app_last_launch: float = 0.0
+_CALENDAR_APP_COOLDOWN = 30  # seconds
+
+
+def _ensure_calendar_app():
+    """Launch Calendar.app if it hasn't been launched in the last 30 seconds."""
+    global _calendar_app_last_launch
+    now = time.monotonic()
+    if now - _calendar_app_last_launch > _CALENDAR_APP_COOLDOWN:
+        subprocess.run(["open", "-g", "-a", "Calendar"], check=False, timeout=5)
+        _calendar_app_last_launch = now
+
+
+def add_attendees_via_applescript(
+    attendee_emails: list[str],
+    event_title: str,
+    calendar_name: str,
+    start_date: datetime,
+) -> None:
     """Add attendees to an existing calendar event using AppleScript.
 
     EventKit's attendees property is read-only, but macOS Calendar.app's AppleScript
     interface supports adding attendees. This function uses AppleScript to add
-    attendees to an already-created event.
+    attendees to an already-created event, matching by calendar + title + start date.
 
     Args:
-        event_id: The EventKit identifier of the event (from event.eventIdentifier())
         attendee_emails: List of email addresses (can be "Name <email@example.com>" format)
-        event_title: The title/summary of the event (used for finding the event)
-
-    Raises:
-        Exception: If AppleScript execution fails
+        event_title: The title/summary of the event
+        calendar_name: The calendar the event belongs to
+        start_date: The start date of the event (naive local time, as from EventKit)
     """
     if not attendee_emails:
         return
 
-    import time
-
-    # Give Calendar.app a moment to sync with EventKit
-    # Also launch Calendar.app to ensure it's running
-    try:
-        subprocess.run(["open", "-a", "Calendar"], check=False, timeout=5)
-        time.sleep(2)  # Give it more time to sync
-    except Exception:
-        pass
+    # Ensure Calendar.app is running (rate-limited to avoid crash-inducing rapid launches).
+    # Google CalDAV calendars need ~8s for Calendar.app to pick up EventKit changes.
+    _ensure_calendar_app()
+    time.sleep(8)
 
     # Build list of attendees for AppleScript
     attendees_data = []
     for email_str in attendee_emails:
-        # Parse email - support both "email@example.com" and "Name <email@example.com>" formats
         email_str = email_str.strip()
-
         if "<" in email_str and ">" in email_str:
-            # Extract name and email from "Name <email@example.com>" format
             parts = email_str.split("<")
-            name = parts[0].strip().replace('"', '\\"')  # Escape quotes
+            name = parts[0].strip().replace('"', '\\"')
             email = parts[1].replace(">", "").strip()
         else:
             email = email_str
             name = email.split("@")[0] if "@" in email else email
-
         attendees_data.append((name, email))
 
-    # Escape the event title for AppleScript
     escaped_title = event_title.replace('"', '\\"')
+    escaped_calendar = calendar_name.replace('"', '\\"')
 
-    # AppleScript to add all attendees to the event
-    # Search across all calendars for the event by summary
     attendees_list = ", ".join(
         [f'{{email:"{email}", display name:"{name}"}}' for name, email in attendees_data]
     )
 
+    # Convert start_date to a Python datetime for AppleScript date components.
+    # EventKit returns NSDate objects, so handle both NSDate and Python datetime.
+    if hasattr(start_date, "timeIntervalSince1970"):
+        # NSDate — convert to naive local datetime
+        timestamp = start_date.timeIntervalSince1970()
+        start_date = datetime.fromtimestamp(timestamp)
+    elif hasattr(start_date, "tzinfo") and start_date.tzinfo is not None:
+        start_date = start_date.astimezone().replace(tzinfo=None)
+
     applescript = f'''
     tell application "Calendar"
-        set allCalendars to every calendar
+        set targetDate to current date
+        set year of targetDate to {start_date.year}
+        set month of targetDate to {start_date.month}
+        set day of targetDate to {start_date.day}
+        set hours of targetDate to {start_date.hour}
+        set minutes of targetDate to {start_date.minute}
+        set seconds of targetDate to {start_date.second}
+
+        -- Step 1: Find the event (retry if Calendar.app hasn't synced it yet)
+        set maxFindAttempts to 5
         set foundEvent to missing value
 
-        repeat with cal in allCalendars
+        repeat maxFindAttempts times
             try
-                set matchingEvents to (every event of cal whose summary is "{escaped_title}")
+                set cal to first calendar whose name is "{escaped_calendar}"
+                set matchingEvents to (every event of cal whose summary is "{escaped_title}" and start date is targetDate)
                 if (count of matchingEvents) > 0 then
                     set foundEvent to item 1 of matchingEvents
                     exit repeat
                 end if
             end try
+            delay 2
         end repeat
 
-        if foundEvent is not missing value then
-            tell foundEvent
-                repeat with attendeeData in {{{attendees_list}}}
-                    make new attendee with properties attendeeData
-                end repeat
-            end tell
-            return "success"
-        else
-            error "Event not found in any calendar"
+        if foundEvent is missing value then
+            error "Event not found after " & maxFindAttempts & " attempts for \\"{escaped_title}\\" in \\"{escaped_calendar}\\""
         end if
+
+        -- Step 2: Add attendees (once only)
+        tell foundEvent
+            repeat with attendeeData in {{{attendees_list}}}
+                make new attendee with properties attendeeData
+            end repeat
+        end tell
+
+        -- Step 3: Verify attendees persisted (retry read, not write)
+        set maxVerifyAttempts to 3
+        repeat maxVerifyAttempts times
+            delay 2
+            if (count of (every attendee of foundEvent)) > 0 then
+                return "success"
+            end if
+        end repeat
+
+        error "Attendees added but did not persist for \\"{escaped_title}\\" in \\"{escaped_calendar}\\""
     end tell
     '''
 
@@ -152,12 +189,10 @@ def add_attendees_via_applescript(event_id: str, attendee_emails: list[str], eve
             ["osascript", "-e", applescript],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=30,
         )
         if result.returncode != 0:
-            logger.warning(
-                f"Failed to add attendees via AppleScript: {result.stderr}"
-            )
+            logger.warning(f"Failed to add attendees via AppleScript: {result.stderr}")
         else:
             logger.info(f"Successfully added {len(attendee_emails)} attendee(s) via AppleScript")
     except Exception as e:
@@ -279,11 +314,15 @@ class CalendarManager:
             if new_event.attendees:
                 try:
                     add_attendees_via_applescript(
-                        ekevent.eventIdentifier(), new_event.attendees, new_event.title
+                        attendee_emails=new_event.attendees,
+                        event_title=new_event.title,
+                        calendar_name=ekevent.calendar().title(),
+                        start_date=ekevent.startDate(),
                     )
+                    # Refresh store so the returned Event includes attendees
+                    self.event_store.refreshSourcesIfNecessary()
                 except Exception as e:
                     logger.warning(f"Failed to add attendees via AppleScript: {e}")
-                    # Don't fail the entire event creation if attendees fail
 
             return Event.from_ekevent(ekevent)
 
@@ -396,13 +435,16 @@ class CalendarManager:
             # AppleScript interface does
             if request.attendees is not None:
                 try:
-                    # Get the event title (use updated title if provided, otherwise existing)
-                    event_title = request.title if request.title else existing_event.title
-                    event_uid = existing_ek_event.eventIdentifier()
-                    add_attendees_via_applescript(event_uid, request.attendees, event_title)
+                    add_attendees_via_applescript(
+                        attendee_emails=request.attendees,
+                        event_title=request.title if request.title else existing_event.title,
+                        calendar_name=existing_ek_event.calendar().title(),
+                        start_date=existing_ek_event.startDate(),
+                    )
+                    # Refresh store so the returned Event includes attendees
+                    self.event_store.refreshSourcesIfNecessary()
                 except Exception as e:
                     logger.warning(f"Failed to update attendees via AppleScript: {e}")
-                    # Don't fail the entire update if attendees fail
 
             # Build log message based on what was updated
             if occurrence_date and update_future_events:

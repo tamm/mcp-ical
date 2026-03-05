@@ -143,7 +143,18 @@ class Event:
     @classmethod
     def from_ekevent(cls, ekevent: EKEvent) -> "Event":
         """Create an Event instance from an EKEvent."""
-        attendees = [str(attendee.name()) for attendee in ekevent.attendees()] if ekevent.attendees() else []
+        attendees = []
+        if ekevent.attendees():
+            for attendee in ekevent.attendees():
+                name = str(attendee.name()) if attendee.name() else None
+                url = str(attendee.URL()) if attendee.URL() else None
+                email = url.replace("mailto:", "") if url and url.startswith("mailto:") else None
+                if name and email:
+                    attendees.append(f"{name} <{email}>")
+                elif email:
+                    attendees.append(email)
+                elif name:
+                    attendees.append(name)
 
         # Convert EKAlarms to our Alarm objects
         alarms = []
