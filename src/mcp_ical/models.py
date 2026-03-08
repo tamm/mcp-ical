@@ -207,25 +207,87 @@ class Event:
             _raw_event=ekevent,
         )
 
+    @staticmethod
+    def _format_local(dt: datetime) -> str:
+        """Format a datetime as a human-readable local time string."""
+        if dt is None:
+            return "N/A"
+        try:
+            return dt.astimezone().strftime("%-d %b %Y %A %-I:%M %p %Z")
+        except Exception:
+            return dt.isoformat()
+
+    def to_summary(self) -> str:
+        """Return a compact one-event summary for list_events output.
+
+        Includes only the fields an AI agent typically needs when scanning a
+        calendar. The consumer can call list_events with a narrow range or
+        inspect a single event by ID if they need full details.
+        """
+        parts: list[str] = []
+
+        # Title line with date
+        if self.all_day:
+            date_str = self.start_time.astimezone().strftime("%-d %b %Y %A")
+            parts.append(f"{self.title} (all day, {date_str})")
+        else:
+            start_local = self._format_local(self.start_time)
+            end_time_str = self.end_time.astimezone().strftime("%-I:%M %p") if self.end_time else ""
+            parts.append(f"{self.title}  {start_local} - {end_time_str}")
+
+        # ID — always needed for update/delete operations
+        parts.append(f"  id: {self.identifier}")
+
+        # Calendar
+        if self.calendar_name:
+            parts.append(f"  calendar: {self.calendar_name}")
+
+        # Location (truncated)
+        if self.location:
+            loc = self.location if len(self.location) <= 80 else self.location[:77] + "..."
+            parts.append(f"  location: {loc}")
+
+        # Notes — first 100 chars only
+        if self.notes:
+            note = self.notes.replace("\n", " ").strip()
+            if len(note) > 100:
+                note = note[:97] + "..."
+            parts.append(f"  notes: {note}")
+
+        # Attendee count (not the full list)
+        if self.attendees:
+            parts.append(f"  attendees: {len(self.attendees)}")
+
+        # Recurrence — human-readable summary
+        if self.recurrence_rule:
+            rr = self.recurrence_rule
+            freq = rr.frequency.name.lower()
+            summary = f"every {rr.interval} {freq}" if rr.interval > 1 else freq
+            if rr.occurrence_count:
+                summary += f", {rr.occurrence_count} times"
+            elif rr.end_date:
+                summary += f", until {self._format_local(rr.end_date)}"
+            parts.append(f"  recurrence: {summary}")
+
+        # Status: flag cancelled events
+        if self.status == 3:
+            parts.append("  status: CANCELLED")
+
+        return "\n".join(parts)
+
     def __str__(self) -> str:
-        """Return a human-readable string representation of the Event."""
+        """Return a detailed string representation of the Event.
+
+        Used when inspecting a single event. For list output, use to_summary().
+        """
         attendees_list = ", ".join(self.attendees) if self.attendees else "None"
         alarms_list = ", ".join(map(str, self.alarms_minutes_offsets)) if self.alarms_minutes_offsets else "None"
 
-        # Format datetime with BOTH ISO 8601 (for machine use) and human-readable local time.
-        # IMPORTANT FOR AI CONSUMERS: Always use the "Local time" field when displaying times
-        # to users or assigning events to calendar days. The ISO timestamp includes a UTC offset
-        # — do NOT read just the date portion without applying the offset first. The local time
-        # string is pre-converted and unambiguous.
         def format_dt(dt):
             if dt is None:
                 return "N/A"
             iso = dt.isoformat()
-            # Human-readable in local timezone (%-d avoids leading zero on macOS/Linux)
-            try:
-                local = dt.astimezone().strftime("%-d %b %Y %A %-I:%M %p %Z")
-            except Exception:
-                local = iso
+            local = self._format_local(dt)
             return f"{iso} (Local time: {local})"
 
         recurrence_info = "No recurrence"

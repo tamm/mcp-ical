@@ -72,7 +72,7 @@ async def list_calendars() -> str:
 
 @mcp.tool()
 async def list_events(start_date: datetime, end_date: datetime, calendar_name: str | None = None) -> str:
-    """List calendar events in a date range.
+    """List calendar events in a date range. Returns a compact plaintext summary.
 
     TIMEZONE REQUIRED: start_date and end_date must include an explicit timezone.
     Any of these formats are accepted:
@@ -83,20 +83,21 @@ async def list_events(start_date: datetime, end_date: datetime, calendar_name: s
 
     The start_date should always use the time such that it represents the beginning of that day (00:00:00).
     The end_date should always use the time such that it represents the end of that day (23:59:59).
-    This way, range based searches are always inclusive and can locate all events in that date range.
 
     Args:
-        start_date: Start date in ISO8601 format with explicit timezone (e.g. 2026-03-04T00:00:00+11:00 or 2026-03-04T00:00:00Z).
-        end_date: End date in ISO8601 format with explicit timezone (e.g. 2026-03-04T23:59:59+11:00 or 2026-03-04T23:59:59Z).
+        start_date: Start date in ISO8601 format with explicit timezone.
+        end_date: End date in ISO8601 format with explicit timezone.
         calendar_name: Optional calendar name to filter by
 
-    IMPORTANT — reading results: Each event shows times in TWO formats:
-    - ISO 8601 with UTC offset (e.g. 2026-03-03T22:00:00+00:00) — for machine use only
-    - "Local time: ..." — the pre-converted local time; USE THIS for display and day assignment
+    IMPORTANT — reading results: The output is plaintext, one event per block.
+    Times shown are pre-converted to local time — use them directly for display
+    and day assignment. Each event includes its id for use with update_event or
+    delete_event. To see full details (notes, attendees, URL, etc.) for a
+    specific event, call list_events with a narrow range or inspect via the id.
 
-    Day boundary warning: A UTC timestamp like 2026-03-03T22:00:00+00:00 is actually
-    2026-03-04 in AEDT (UTC+11). Always use the Local time field to determine which
-    calendar day an event belongs to.
+    Cancelled events (status: CANCELLED) are included but flagged. Duplicate
+    all-day events (same title and date from multiple subscribed calendars)
+    are collapsed to a single entry.
     """
     if start_date.tzinfo is None or end_date.tzinfo is None:
         return (
@@ -111,7 +112,19 @@ async def list_events(start_date: datetime, end_date: datetime, calendar_name: s
         if not events:
             return "No events found in the specified date range"
 
-        return "".join([str(event) for event in events])
+        # Deduplicate all-day events with the same title and date
+        # (common with multiple holiday calendar subscriptions)
+        seen_allday: set[tuple[str, str]] = set()
+        deduped: list = []
+        for event in events:
+            if event.all_day:
+                key = (event.title, event.start_time.strftime("%Y-%m-%d"))
+                if key in seen_allday:
+                    continue
+                seen_allday.add(key)
+            deduped.append(event)
+
+        return "\n\n".join(event.to_summary() for event in deduped)
 
     except Exception as e:
         return f"Error listing events: {str(e)}"
