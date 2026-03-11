@@ -242,17 +242,20 @@ class Event:
         if self.calendar_name:
             parts.append(f"  calendar: {self.calendar_name}")
 
-        # Location (truncated)
+        # Location — show short venue names, suppress long URLs
         if self.location:
-            loc = self.location if len(self.location) <= 80 else self.location[:77] + "..."
-            parts.append(f"  location: {loc}")
+            loc = self.location.strip()
+            if loc.startswith(("http://", "https://")):
+                parts.append("  location: (online meeting link)")
+            else:
+                if len(loc) > 80:
+                    loc = loc[:77] + "..."
+                parts.append(f"  location: {loc}")
 
-        # Notes — first 100 chars only
+        # Notes — just flag presence; content often contains URLs, email
+        # threads, legal boilerplate etc. that bloats the listing
         if self.notes:
-            note = self.notes.replace("\n", " ").strip()
-            if len(note) > 100:
-                note = note[:97] + "..."
-            parts.append(f"  notes: {note}")
+            parts.append("  has_notes: yes")
 
         # Attendee count (not the full list)
         if self.attendees:
